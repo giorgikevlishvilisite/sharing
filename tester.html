@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Real‑Time Typing Mirror — 1 HTML File</title>
+  <style>
+    :root{
+      --bg:#0b1020; --card:#121834; --muted:#2a3670; --text:#e8ecff; --accent:#7aa2ff; --good:#5ce1a5; --warn:#ffd166;
+    }
+    *{box-sizing:border-box}
+    body{margin:0;font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Inter,Arial;background:linear-gradient(180deg,#0b1020, #0b132b 35%, #0f1638);color:var(--text);}
+    .wrap{max-width:1100px;margin:24px auto;padding:16px}
+    header{display:flex;gap:14px;align-items:center;justify-content:space-between;margin-bottom:16px}
+    h1{font-size:clamp(20px,5vw,30px);margin:0;font-weight:800;letter-spacing:.3px}
+    .badge{font-size:12px;padding:6px 10px;border-radius:999px;background:linear-gradient(90deg,#2a3670,#1c2758);border:1px solid #21306a;}
+    .grid{display:grid;grid-template-columns:1.2fr .8fr;gap:16px}
+    @media (max-width:900px){.grid{grid-template-columns:1fr}}
+    .card{background:linear-gradient(180deg,#121834,#101634);border:1px solid #223070;border-radius:18px;box-shadow:0 10px 30px rgba(0,0,0,.35);overflow:hidden}
+    .card .hd{padding:14px 16px;border-bottom:1px solid #223070;display:flex;align-items:center;gap:10px}
+    .card .hd h2{margin:0;font-size:16px}
+    .card .bd{padding:16px}
+    .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+    input[type="text"], textarea{width:100%;padding:12px 14px;border-radius:12px;border:1px solid #2a3670;background:#0e1430;color:var(--text);outline:none;font-family:inherit}
+    textarea{min-height:200px;resize:vertical}
+    button{appearance:none;border:none;background:linear-gradient(180deg,#304086,#253473);border:1px solid #2a3670;color:#e8ecff;padding:10px 14px;border-radius:12px;cursor:pointer;font-weight:700}
+    button.primary{background:linear-gradient(180deg,#6a86ff,#5069db);border-color:#6b86ff;color:#0a0f22}
+    button.ghost{background:transparent}
+    button:disabled{opacity:.55;cursor:not-allowed}
+    .help{font-size:13px;color:#c8d2ffbf}
+    .muted{opacity:.8}
+    .tag{padding:4px 8px;border-radius:8px;border:1px dashed #3a4aa8;font-size:12px}
+    .qr{display:grid;place-items:center;background:#0e1430;border:1px dashed #2a3670;border-radius:14px;padding:10px;min-height:160px}
+    .log{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;background:#0e1430;border:1px solid #2a3670;border-radius:12px;padding:10px;max-height:200px;overflow:auto}
+    .consent{display:flex;gap:8px;align-items:flex-start;font-size:14px}
+    .pill{display:inline-flex;align-items:center;gap:6px;padding:6px 10px;border-radius:999px;background:#0e1430;border:1px solid #2a3670}
+    .status-dot{width:8px;height:8px;border-radius:50%;background:#c33;display:inline-block}
+    .status-dot.on{background:var(--good)}
+    .id{font-variant:tabular-nums}
+    footer{margin-top:18px;font-size:12px;opacity:.8}
+    .copy{font-size:12px}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <div class="row">
+        <h1>Real‑Time Typing Mirror</h1>
+        <span class="badge">single‑file • P2P (WebRTC via PeerJS)</span>
+      </div>
+      <div class="pill"><span class="status-dot" id="dot"></span><span id="netStatus">offline</span></div>
+    </header>
+
+    <div class="grid">
+      <section class="card">
+        <div class="hd"><h2>Shared Text Area</h2><span class="tag">what you type is visible to everyone in the room</span></div>
+        <div class="bd">
+          <div class="consent" style="margin-bottom:10px">
+            <input type="checkbox" id="consentBox">
+            <label for="consentBox">I understand and consent that anything I type below will be shared in real time with everyone connected to this room. Only use this with people who agree.</label>
+          </div>
+          <textarea id="shared" placeholder="Start typing after you connect & consent…" disabled></textarea>
+          <div class="row" style="justify-content:space-between;margin-top:10px">
+            <span class="help">Tip: Open this page on your phone and join the same room to see live typing.</span>
+            <span class="copy">Characters: <span id="count">0</span></span>
+          </div>
+        </div>
+      </section>
+
+      <aside class="card">
+        <div class="hd"><h2>Connect</h2></div>
+        <div class="bd">
+          <div class="row" style="margin-bottom:10px">
+            <button id="createBtn" class="primary">Create room</button>
+            <button id="joinBtn">Join room</button>
+            <button id="leaveBtn" class="ghost" disabled>Leave</button>
+          </div>
+
+          <div class="row" style="margin-bottom:10px">
+            <input type="text" id="roomInput" placeholder="Room ID (auto if empty)" maxlength="24" />
+            <button id="copyLink">Copy link</button>
+          </div>
+
+          <div class="qr" id="qrBox"><div id="qrcode" aria-label="QR code"></div></div>
+          
+          <div style="margin-top:12px" class="help">
+            Anyone with the link/ID can join this room. Data is peer‑to‑peer and not stored.
+          </div>
+
+          <h3 style="margin:16px 0 6px 0;font-size:14px;opacity:.9">Event log</h3>
+          <div class="log" id="log" aria-live="polite"></div>
+        </div>
+      </aside>
+    </div>
+
+    <footer>
+      Built for demos & collaborative note‑taking. Do not use for secret or sensitive data.
+    </footer>
+  </div>
+
+  <!-- PeerJS (WebRTC helper) -->
+  <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+  <!-- QRCode generator -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+
+  <script>
+  (()=>{
+    const $ = (s)=>document.querySelector(s);
+    const logEl = $('#log');
+    const dot = $('#dot');
+    const netStatus = $('#netStatus');
+    const ta = $('#shared');
+    const count = $('#count');
+    const consentBox = $('#consentBox');
+    const roomInput = $('#roomInput');
+    const qrBox = $('#qrcode');
+
+    // state
+    let peer = null;        // our PeerJS instance
+    let isHost = false;     // am I the room host?
+    let roomId = null;      // string
+    const conns = new Map();// peerId -> DataConnection
+
+    // utils
+    const randId = () => Math.random().toString(36).slice(2,8).toUpperCase();
+    const linkFor = (id) => location.origin + location.pathname + '#'+ encodeURIComponent(id);
+    const setOnline = (on)=>{ dot.classList.toggle('on',!!on); netStatus.textContent= on? 'connected' : 'offline'; }
+    const log = (msg)=>{ const t = new Date().toLocaleTimeString(); logEl.innerHTML = `[${t}] ${msg}<br>` + logEl.innerHTML; }
+    const setHash = (id)=>{ history.replaceState(null,'', linkFor(id)); };
+    const updateQR = (id)=>{ qrBox.innerHTML=''; new QRCode(qrBox,{ text: linkFor(id), width:160, height:160 }); };
+    const broadcast = (payload)=>{ conns.forEach(c=>{ try{ c.open && c.send(payload);}catch(e){} }); };
+
+    // consent gating
+    const setTypingEnabled = ()=>{ ta.disabled = !consentBox.checked || conns.size===0 && !isHost; };
+    consentBox.addEventListener('change', setTypingEnabled);
+
+    // character counter
+    ta.addEventListener('input', ()=>{
+      count.textContent = ta.value.length;
+      if(!consentBox.checked) return; // don't send without consent
+      const msg = {type:'text', value: ta.value, from: peer?.id || 'local', ts: Date.now()};
+      if(isHost){ broadcast(msg); } else { // send to host only
+        conns.forEach(c=>{ if(c.open){ try{ c.send(msg);}catch(e){} } });
+      }
+    });
+
+    // Debounce typing events for efficiency
+    let debTimer=null; const debounce=(fn,ms)=>{ return (...a)=>{ clearTimeout(debTimer); debTimer=setTimeout(()=>fn(...a),ms); } };
+    ta.removeEventListener('input',()=>{});
+    ta.addEventListener('input', debounce(()=>{
+      count.textContent = ta.value.length;
+      if(!consentBox.checked) return;
+      const msg = {type:'text', value: ta.value, from: peer?.id || 'local', ts: Date.now()};
+      if(isHost){ broadcast(msg);} else { conns.forEach(c=>{ if(c.open){ c.send(msg);} }); }
+    },120));
+
+    // host receive + relay; client receive
+    const handleMessage = (data, fromId)=>{
+      if(data?.type==='text'){
+        if(fromId && isHost){ // relay to everyone except sender
+          conns.forEach((c,id)=>{ if(id!==fromId && c.open){ try{ c.send(data);}catch(e){} } });
+        }
+        // update local textarea without triggering resend loop
+        const caret = ta.selectionStart;
+        const wasFocused = document.activeElement===ta;
+        ta.value = data.value;
+        count.textContent = ta.value.length;
+        if(wasFocused){ ta.setSelectionRange(caret, caret); }
+      }
+    };
+
+    // Create room (host)
+    $('#createBtn').addEventListener('click', async ()=>{
+      if(peer){ log('Already connected.'); return; }
+      isHost = true;
+      roomId = (roomInput.value || randId()).toUpperCase();
+      roomInput.value = roomId;
+      setHash(roomId); updateQR(roomId);
+      peer = new Peer(roomId, { debug: 1 }); // uses PeerServer Cloud
+      setOnline(false);
+      log(`Creating room <b class="id">${roomId}</b>…`);
+
+      peer.on('open', ()=>{ setOnline(true); $('#leaveBtn').disabled=false; log('Room is live. Waiting for guests…'); setTypingEnabled(); });
+      peer.on('connection', (conn)=>{
+        conns.set(conn.peer, conn);
+        log(`Guest connected: <b>${conn.peer}</b>`);
+        // send current state immediately
+        conn.on('open', ()=>{ conn.send({type:'text', value: ta.value, from: peer.id, ts: Date.now()}); setTypingEnabled(); });
+        conn.on('data', (d)=> handleMessage(d, conn.peer));
+        conn.on('close', ()=>{ conns.delete(conn.peer); log(`Guest left: <b>${conn.peer}</b>`); setTypingEnabled(); });
+        conn.on('error', (e)=> log(`Conn error: ${e.message}`));
+      });
+      peer.on('disconnected', ()=>{ setOnline(false); });
+      peer.on('error', (e)=>{ log(`Peer error: ${e.type||'error'} — ${e.message}`); });
+    });
+
+    // Join room (client)
+    $('#joinBtn').addEventListener('click', ()=>{
+      if(peer){ log('Already connected.'); return; }
+      const hashId = (location.hash||'').slice(1);
+      roomId = (roomInput.value || hashId || '').toUpperCase();
+      if(!roomId){ alert('Enter a Room ID or open a link with a room hash.'); return; }
+      roomInput.value = roomId; setHash(roomId); updateQR(roomId);
+      peer = new Peer(undefined, { debug: 1 });
+      setOnline(false);
+      log(`Joining room <b class="id">${roomId}</b>…`);
+      peer.on('open', ()=>{
+        const conn = peer.connect(roomId, { reliable: true });
+        conn.on('open', ()=>{ conns.set(roomId, conn); setOnline(true); $('#leaveBtn').disabled=false; log('Connected to host.'); setTypingEnabled(); });
+        conn.on('data', (d)=> handleMessage(d, roomId));
+        conn.on('close', ()=>{ conns.delete(roomId); setOnline(false); log('Disconnected from host.'); setTypingEnabled(); });
+        conn.on('error', (e)=> log(`Conn error: ${e.message}`));
+      });
+      peer.on('error', (e)=>{ log(`Peer error: ${e.type||'error'} — ${e.message}`); });
+    });
+
+    // Leave/cleanup
+    $('#leaveBtn').addEventListener('click', ()=>{
+      conns.forEach(c=>{ try{ c.close(); }catch(e){} });
+      conns.clear();
+      if(peer){ try{ peer.destroy(); }catch(e){} }
+      peer = null; isHost = false; setOnline(false); $('#leaveBtn').disabled=true; log('Left room.'); setTypingEnabled();
+    });
+
+    // Copy link button
+    $('#copyLink').addEventListener('click', async ()=>{
+      const id = (roomInput.value || '').toUpperCase() || randId();
+      roomInput.value = id; setHash(id); updateQR(id);
+      const url = linkFor(id);
+      try{ await navigator.clipboard.writeText(url); log(`Link copied: <span class="id">${url}</span>`);}catch(e){
+        prompt('Copy this link:', url);
+      }
+    });
+
+    // Pre-fill from hash if present
+    const hash = (location.hash||'').slice(1);
+    if(hash){ roomInput.value = decodeURIComponent(hash.toUpperCase()); updateQR(roomInput.value); }
+
+    // Network hint
+    window.addEventListener('offline', ()=>log('Browser went offline.'));
+    window.addEventListener('online', ()=>log('Browser is online.'));
+  })();
+  </script>
+</body>
+</html>
