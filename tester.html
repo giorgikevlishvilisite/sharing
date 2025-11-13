@@ -55,6 +55,7 @@
       <div class="row">
         <div class="pill"><span class="status-dot" id="dot"></span><span id="netStatus">offline</span></div>
         <div class="pill" style="background:linear-gradient(135deg,#9333ea,#7e22ce)"><span id="userCount">0</span> users</div>
+        <div class="pill" id="lockIndicator" style="display:none;background:linear-gradient(135deg,#dc2626,#b91c1c)">🔒 Locked</div>
       </div>
     </header>
 
@@ -80,6 +81,7 @@
           <div class="row" style="margin-bottom:10px">
             <button id="createBtn" class="primary">Create room</button>
             <button id="joinBtn">Join room</button>
+            <button id="lockBtn" class="ghost" disabled>Lock</button>
             <button id="leaveBtn" class="ghost" disabled>Leave</button>
           </div>
 
@@ -122,11 +124,13 @@
     const roomInput = $('#roomInput');
     const qrBox = $('#qrcode');
     const userCount = $('#userCount');
+    const lockIndicator = $('#lockIndicator');
 
     // state
     let peer = null;        // our PeerJS instance
     let isHost = false;     // am I the room host?
     let roomId = null;      // string
+    let isLocked = false;   // is room locked?
     const conns = new Map();// peerId -> DataConnection
 
     // utils
@@ -138,6 +142,26 @@
     const updateQR = (id)=>{ qrBox.innerHTML=''; new QRCode(qrBox,{ text: linkFor(id), width:160, height:160 }); };
     const broadcast = (payload)=>{ conns.forEach(c=>{ try{ c.open && c.send(payload);}catch(e){} }); };
     const updateUserCount = ()=>{ const total = conns.size + (peer ? 1 : 0); userCount.textContent = total; };
+    const updateLockUI = ()=>{ lockIndicator.style.display = isLocked ? 'inline-flex' : 'none'; $('#lockBtn').textContent = isLocked ? 'Unlock' : 'Lock'; };
+
+    // sound notifications
+    const playSound = (freq, duration = 200) => {
+      try {
+        const ctx = new (window.AudioContext || window.webkitAudioContext)();
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.frequency.value = freq;
+        osc.type = 'sine';
+        gain.gain.setValueAtTime(0.3, ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + duration / 1000);
+        osc.start();
+        osc.stop(ctx.currentTime + duration / 1000);
+      } catch(e) {}
+    };
+    const soundJoin = () => { playSound(800, 150); setTimeout(() => playSound(1000, 150), 100); };
+    const soundLeave = () => { playSound(600, 150); setTimeout(() => playSound(400, 150), 100); };
 
     // consent gating
     const setTypingEnabled = ()=>{ ta.disabled = !consentBox.checked || conns.size===0 && !isHost; };
@@ -175,6 +199,10 @@
         ta.value = data.value;
         count.textContent = ta.value.length;
         if(wasFocused){ ta.setSelectionRange(caret, caret); }
+      } else if(data?.type==='lock'){
+        isLocked = data.locked;
+        updateLockUI();
+        log(isLocked ? 'Room locked by host' : 'Room unlocked by host');
       }
     };
 
@@ -189,15 +217,26 @@
       setOnline(false);
       log(`Creating room <b class="id">${roomId}</b>…`);
 
-      peer.on('open', ()=>{ setOnline(true); $('#leaveBtn').disabled=false; log('Room is live. Waiting for guests…'); setTypingEnabled(); updateUserCount(); });
+      peer.on('open', ()=>{ setOnline(true); $('#leaveBtn').disabled=false; $('#lockBtn').disabled=false; log('Room is live. Waiting for guests…'); setTypingEnabled(); updateUserCount(); });
       peer.on('connection', (conn)=>{
+        // Reject if locked
+        if(isLocked){
+          log(`Guest <b>${conn.peer}</b> rejected (room locked)`);
+          try{ conn.close(); }catch(e){}
+          return;
+        }
         conns.set(conn.peer, conn);
         log(`Guest connected: <b>${conn.peer}</b>`);
         updateUserCount();
+        soundJoin();
         // send current state immediately
-        conn.on('open', ()=>{ conn.send({type:'text', value: ta.value, from: peer.id, ts: Date.now()}); setTypingEnabled(); });
+        conn.on('open', ()=>{ 
+          conn.send({type:'text', value: ta.value, from: peer.id, ts: Date.now()});
+          conn.send({type:'lock', locked: isLocked});
+          setTypingEnabled(); 
+        });
         conn.on('data', (d)=> handleMessage(d, conn.peer));
-        conn.on('close', ()=>{ conns.delete(conn.peer); log(`Guest left: <b>${conn.peer}</b>`); setTypingEnabled(); updateUserCount(); });
+        conn.on('close', ()=>{ conns.delete(conn.peer); log(`Guest left: <b>${conn.peer}</b>`); setTypingEnabled(); updateUserCount(); soundLeave(); });
         conn.on('error', (e)=> log(`Conn error: ${e.message}`));
       });
       peer.on('disconnected', ()=>{ setOnline(false); });
@@ -216,9 +255,9 @@
       log(`Joining room <b class="id">${roomId}</b>…`);
       peer.on('open', ()=>{
         const conn = peer.connect(roomId, { reliable: true });
-        conn.on('open', ()=>{ conns.set(roomId, conn); setOnline(true); $('#leaveBtn').disabled=false; log('Connected to host.'); setTypingEnabled(); updateUserCount(); });
+        conn.on('open', ()=>{ conns.set(roomId, conn); setOnline(true); $('#leaveBtn').disabled=false; log('Connected to host.'); setTypingEnabled(); updateUserCount(); soundJoin(); });
         conn.on('data', (d)=> handleMessage(d, roomId));
-        conn.on('close', ()=>{ conns.delete(roomId); setOnline(false); log('Disconnected from host.'); setTypingEnabled(); updateUserCount(); });
+        conn.on('close', ()=>{ conns.delete(roomId); setOnline(false); log('Disconnected from host.'); setTypingEnabled(); updateUserCount(); soundLeave(); });
         conn.on('error', (e)=> log(`Conn error: ${e.message}`));
       });
       peer.on('error', (e)=>{ log(`Peer error: ${e.type||'error'} — ${e.message}`); });
