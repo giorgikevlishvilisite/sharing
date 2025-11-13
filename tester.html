@@ -86,11 +86,6 @@
           </div>
 
           <div class="row" style="margin-bottom:10px">
-            <button id="voiceBtn" disabled style="background:linear-gradient(135deg,#16a34a,#15803d)">🎤 Start Voice</button>
-            <button id="muteBtn" disabled style="display:none">🔇 Mute</button>
-          </div>
-
-          <div class="row" style="margin-bottom:10px">
             <input type="text" id="roomInput" placeholder="Room ID (auto if empty)" maxlength="24" />
             <button id="copyLink">Copy link</button>
           </div>
@@ -268,21 +263,12 @@
       peer.on('error', (e)=>{ log(`Peer error: ${e.type||'error'} — ${e.message}`); });
     });
 
-    // Lock/unlock room (host only)
-    $('#lockBtn').addEventListener('click', ()=>{
-      if(!isHost) return;
-      isLocked = !isLocked;
-      updateLockUI();
-      broadcast({type:'lock', locked: isLocked});
-      log(isLocked ? 'Room locked. New users cannot join.' : 'Room unlocked. New users can join.');
-    });
-
     // Leave/cleanup
     $('#leaveBtn').addEventListener('click', ()=>{
       conns.forEach(c=>{ try{ c.close(); }catch(e){} });
       conns.clear();
       if(peer){ try{ peer.destroy(); }catch(e){} }
-      peer = null; isHost = false; isLocked = false; setOnline(false); $('#leaveBtn').disabled=true; $('#lockBtn').disabled=true; log('Left room.'); setTypingEnabled(); updateUserCount(); updateLockUI();
+      peer = null; isHost = false; setOnline(false); $('#leaveBtn').disabled=true; log('Left room.'); setTypingEnabled(); updateUserCount();
     });
 
     // Copy link button
