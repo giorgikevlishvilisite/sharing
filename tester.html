@@ -53,6 +53,14 @@
     .user-item button{padding:4px 8px;font-size:11px}
     .user-item.muted{opacity:.6;border-color:#dc2626}
     .user-item.muted .user-id{color:#fca5a5}
+    .draw-canvas{width:100%;height:400px;border:1px solid rgba(168,85,247,.4);border-radius:12px;background:#fff;cursor:crosshair;display:none;margin-top:12px}
+    .draw-controls{display:none;gap:10px;margin-top:10px;align-items:center;flex-wrap:wrap}
+    .color-btn{width:32px;height:32px;border-radius:8px;cursor:pointer;border:2px solid transparent;transition:all .2s}
+    .color-btn.active{border-color:#fff;box-shadow:0 0 10px currentColor}
+    .screen-container{margin-top:12px;display:none}
+    .screen-video{width:100%;max-height:500px;border:1px solid rgba(168,85,247,.4);border-radius:12px;background:#000;display:block}
+    .screen-info{font-size:13px;color:#d8b4fe;margin-top:8px;display:flex;align-items:center;gap:8px}
+    .screen-info .presenter{color:#a78bfa;font-weight:700}
   </style>
 </head>
 <body>
@@ -74,7 +82,11 @@
         <div class="hd">
           <h2>Shared Text Area</h2>
           <span class="tag">what you type is visible to everyone in the room</span>
-          <button id="codeModeBtn" class="ghost" style="margin-left:auto;font-size:13px;padding:6px 12px">📝 Text</button>
+          <div style="margin-left:auto;display:flex;gap:8px">
+            <button id="textModeBtn" class="ghost" style="font-size:13px;padding:6px 12px">📝 Text</button>
+            <button id="codeModeBtn" class="ghost" style="font-size:13px;padding:6px 12px">💻 Code</button>
+            <button id="drawModeBtn" class="ghost" style="font-size:13px;padding:6px 12px">🎨 Draw</button>
+          </div>
         </div>
         <div class="bd">
           <div class="consent" style="margin-bottom:10px">
@@ -88,6 +100,24 @@
             <span class="help">HTML/CSS/JS supported</span>
           </div>
           <iframe id="outputFrame" class="output-frame" sandbox="allow-scripts" style="display:none"></iframe>
+          <canvas id="drawCanvas" class="draw-canvas"></canvas>
+          <div class="draw-controls" id="drawControls">
+            <span class="help">Color:</span>
+            <button class="color-btn active" data-color="#000000" style="background:#000"></button>
+            <button class="color-btn" data-color="#dc2626" style="background:#dc2626"></button>
+            <button class="color-btn" data-color="#ea580c" style="background:#ea580c"></button>
+            <button class="color-btn" data-color="#16a34a" style="background:#16a34a"></button>
+            <button class="color-btn" data-color="#2563eb" style="background:#2563eb"></button>
+            <button class="color-btn" data-color="#9333ea" style="background:#9333ea"></button>
+            <label class="help" style="margin-left:10px">Size: <input type="range" id="brushSize" min="1" max="20" value="3" style="width:100px"></label>
+            <button id="clearCanvas" class="ghost">Clear Canvas</button>
+          </div>
+          <div class="screen-container" id="screenContainer">
+            <video id="screenVideo" class="screen-video" autoplay playsinline></video>
+            <div class="screen-info" id="screenInfo">
+              <span>📺 <span class="presenter" id="presenterName">Someone</span> is sharing their screen</span>
+            </div>
+          </div>
           <div class="row" style="justify-content:space-between;margin-top:10px">
             <span class="help">Tip: Open this page on your phone and join the same room to see live typing.</span>
             <span class="copy">Characters: <span id="count">0</span></span>
@@ -102,6 +132,7 @@
             <button id="createBtn" class="primary">Create room</button>
             <button id="joinBtn">Join room</button>
             <button id="lockBtn" class="ghost" disabled>Lock</button>
+            <button id="shareScreenBtn" class="ghost" disabled>📺 Share Screen</button>
             <button id="leaveBtn" class="ghost" disabled>Leave</button>
           </div>
 
@@ -150,11 +181,21 @@
     const qrBox = $('#qrcode');
     const userCount = $('#userCount');
     const lockIndicator = $('#lockIndicator');
+    const textModeBtn = $('#textModeBtn');
     const codeModeBtn = $('#codeModeBtn');
+    const drawModeBtn = $('#drawModeBtn');
     const runBtn = $('#runBtn');
     const clearBtn = $('#clearBtn');
     const runControls = $('#runControls');
     const outputFrame = $('#outputFrame');
+    const drawCanvas = $('#drawCanvas');
+    const drawControls = $('#drawControls');
+    const brushSize = $('#brushSize');
+    const clearCanvas = $('#clearCanvas');
+    const shareScreenBtn = $('#shareScreenBtn');
+    const screenContainer = $('#screenContainer');
+    const screenVideo = $('#screenVideo');
+    const presenterName = $('#presenterName');
     const userListContainer = $('#userListContainer');
     const userList = $('#userList');
 
@@ -163,10 +204,21 @@
     let isHost = false;     // am I the room host?
     let roomId = null;      // string
     let isLocked = false;   // is room locked?
-    let isCodeMode = false; // code sharing mode
+    let currentMode = 'text'; // 'text' | 'code' | 'draw'
     let isMuted = false;    // am I muted by host?
     const conns = new Map();// peerId -> DataConnection
     const userStates = new Map();// peerId -> {muted: bool}
+    
+    // Drawing state
+    let isDrawing = false;
+    let ctx = null;
+    let currentColor = '#000000';
+    let currentBrushSize = 3;
+
+    // Screen sharing state
+    let isSharing = false;
+    let screenStream = null;
+    let currentPresenter = null;
 
     // utils
     const randId = () => Math.random().toString(36).slice(2,8).toUpperCase();
@@ -189,10 +241,12 @@
         div.innerHTML = `
           <span class="user-id">${peerId}</span>
           <div class="user-controls">
+            <button class="ghost transfer-btn">Make Host</button>
             <button class="ghost mute-btn">${state.muted ? 'Unmute' : 'Mute'}</button>
             <button class="ghost kick-btn">Kick</button>
           </div>
         `;
+        div.querySelector('.transfer-btn').addEventListener('click', ()=>transferHost(peerId));
         div.querySelector('.mute-btn').addEventListener('click', ()=>toggleMute(peerId));
         div.querySelector('.kick-btn').addEventListener('click', ()=>kickUser(peerId));
         userList.appendChild(div);
@@ -240,6 +294,21 @@
       updateUserCount();
       updateUserList();
       soundLeave();
+    };
+
+    const transferHost = (peerId)=>{
+      if(!isHost) return;
+      if(!confirm(`Transfer host privileges to ${peerId}?`)) return;
+      const conn = conns.get(peerId);
+      if(conn?.open){
+        try{
+          conn.send({type:'transfer-host', newHostId: peerId, connections: Array.from(conns.keys()).filter(id=>id!==peerId)});
+          isHost = false;
+          $('#lockBtn').disabled = true;
+          updateUserList();
+          log(`Host transferred to ${peerId}`);
+        }catch(e){}
+      }
     };
 
     // consent gating
@@ -293,6 +362,29 @@
       } else if(data?.type==='kick'){
         log('You have been kicked by the host');
         setTimeout(()=>$('#leaveBtn').click(), 500);
+      } else if(data?.type==='transfer-host'){
+        isHost = true;
+        $('#lockBtn').disabled = false;
+        log('You are now the host!');
+        updateUserList();
+      } else if(data?.type==='draw'){
+        drawOnCanvas(data.x, data.y, data.x2, data.y2, data.color, data.size);
+      } else if(data?.type==='clear-canvas'){
+        clearCanvasLocal();
+      } else if(data?.type==='screen-start'){
+        currentPresenter = data.presenter;
+        presenterName.textContent = data.presenter;
+        screenContainer.style.display = 'block';
+        log(`${data.presenter} started screen sharing`);
+      } else if(data?.type==='screen-stop'){
+        stopScreenDisplay();
+        log(`${data.presenter} stopped screen sharing`);
+      } else if(data?.type==='screen-offer'){
+        handleScreenOffer(data, fromId);
+      } else if(data?.type==='screen-answer'){
+        handleScreenAnswer(data);
+      } else if(data?.type==='screen-ice'){
+        handleScreenIce(data);
       }
     };
 
@@ -307,7 +399,7 @@
       setOnline(false);
       log(`Creating room <b class="id">${roomId}</b>…`);
 
-      peer.on('open', ()=>{ setOnline(true); $('#leaveBtn').disabled=false; $('#lockBtn').disabled=false; log('Room is live. Waiting for guests…'); setTypingEnabled(); updateUserCount(); });
+      peer.on('open', ()=>{ setOnline(true); $('#leaveBtn').disabled=false; $('#lockBtn').disabled=false; $('#shareScreenBtn').disabled=false; log('Room is live. Waiting for guests…'); setTypingEnabled(); updateUserCount(); });
       peer.on('connection', (conn)=>{
         // Reject if locked
         if(isLocked){
@@ -347,7 +439,7 @@
       log(`Joining room <b class="id">${roomId}</b>…`);
       peer.on('open', ()=>{
         const conn = peer.connect(roomId, { reliable: true });
-        conn.on('open', ()=>{ conns.set(roomId, conn); setOnline(true); $('#leaveBtn').disabled=false; log('Connected to host.'); setTypingEnabled(); updateUserCount(); soundJoin(); });
+        conn.on('open', ()=>{ conns.set(roomId, conn); setOnline(true); $('#leaveBtn').disabled=false; $('#shareScreenBtn').disabled=false; log('Connected to host.'); setTypingEnabled(); updateUserCount(); soundJoin(); });
         conn.on('data', (d)=> handleMessage(d, roomId));
         conn.on('close', ()=>{ conns.delete(roomId); setOnline(false); log('Disconnected from host.'); setTypingEnabled(); updateUserCount(); soundLeave(); });
         conn.on('error', (e)=> log(`Conn error: ${e.message}`));
@@ -366,11 +458,12 @@
 
     // Leave/cleanup
     $('#leaveBtn').addEventListener('click', ()=>{
+      if(isSharing) stopScreenShare();
       conns.forEach(c=>{ try{ c.close(); }catch(e){} });
       conns.clear();
       userStates.clear();
       if(peer){ try{ peer.destroy(); }catch(e){} }
-      peer = null; isHost = false; isMuted = false; setOnline(false); $('#leaveBtn').disabled=true; $('#lockBtn').disabled=true; log('Left room.'); setTypingEnabled(); updateUserCount(); updateUserList();
+      peer = null; isHost = false; isMuted = false; setOnline(false); $('#leaveBtn').disabled=true; $('#lockBtn').disabled=true; $('#shareScreenBtn').disabled=true; log('Left room.'); setTypingEnabled(); updateUserCount(); updateUserList();
     });
 
     // Copy link button
@@ -387,16 +480,35 @@
     const hash = (location.hash||'').slice(1);
     if(hash){ roomInput.value = decodeURIComponent(hash.toUpperCase()); updateQR(roomInput.value); }
 
-    // Code mode toggle
-    codeModeBtn.addEventListener('click', ()=>{
-      isCodeMode = !isCodeMode;
-      ta.classList.toggle('code-mode', isCodeMode);
-      codeModeBtn.textContent = isCodeMode ? '💻 Code' : '📝 Text';
-      ta.placeholder = isCodeMode ? 'Share code here…' : 'Start typing after you connect & consent…';
-      runControls.style.display = isCodeMode ? 'flex' : 'none';
-      if(!isCodeMode) outputFrame.style.display = 'none';
-      log(isCodeMode ? 'Switched to code mode.' : 'Switched to text mode.');
-    });
+    // Mode switching
+    const setMode = (mode)=>{
+      currentMode = mode;
+      textModeBtn.classList.toggle('primary', mode==='text');
+      codeModeBtn.classList.toggle('primary', mode==='code');
+      drawModeBtn.classList.toggle('primary', mode==='draw');
+      
+      ta.style.display = (mode==='text' || mode==='code') ? 'block' : 'none';
+      ta.classList.toggle('code-mode', mode==='code');
+      runControls.style.display = mode==='code' ? 'flex' : 'none';
+      drawCanvas.style.display = mode==='draw' ? 'block' : 'none';
+      drawControls.style.display = mode==='draw' ? 'flex' : 'none';
+      
+      if(mode!=='code') outputFrame.style.display = 'none';
+      
+      if(mode==='draw' && !ctx){
+        ctx = drawCanvas.getContext('2d');
+        drawCanvas.width = drawCanvas.offsetWidth;
+        drawCanvas.height = drawCanvas.offsetHeight;
+        ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
+      }
+      
+      log(`Switched to ${mode} mode.`);
+    };
+
+    textModeBtn.addEventListener('click', ()=>setMode('text'));
+    codeModeBtn.addEventListener('click', ()=>setMode('code'));
+    drawModeBtn.addEventListener('click', ()=>setMode('draw'));
 
     // Run code
     runBtn.addEventListener('click', ()=>{
@@ -419,9 +531,218 @@
       log('Output cleared.');
     });
 
+    // Drawing functions
+    const getMousePos = (e)=>{
+      const rect = drawCanvas.getBoundingClientRect();
+      const scaleX = drawCanvas.width / rect.width;
+      const scaleY = drawCanvas.height / rect.height;
+      return {
+        x: (e.clientX - rect.left) * scaleX,
+        y: (e.clientY - rect.top) * scaleY
+      };
+    };
+
+    const getTouchPos = (e)=>{
+      if(e.touches.length>0){
+        const rect = drawCanvas.getBoundingClientRect();
+        const scaleX = drawCanvas.width / rect.width;
+        const scaleY = drawCanvas.height / rect.height;
+        return {
+          x: (e.touches[0].clientX - rect.left) * scaleX,
+          y: (e.touches[0].clientY - rect.top) * scaleY
+        };
+      }
+      return null;
+    };
+
+    const drawOnCanvas = (x1, y1, x2, y2, color, size)=>{
+      if(!ctx) return;
+      ctx.strokeStyle = color;
+      ctx.lineWidth = size;
+      ctx.beginPath();
+      ctx.moveTo(x1, y1);
+      ctx.lineTo(x2, y2);
+      ctx.stroke();
+    };
+
+    const clearCanvasLocal = ()=>{
+      if(!ctx) return;
+      ctx.clearRect(0, 0, drawCanvas.width, drawCanvas.height);
+    };
+
+    let lastPos = null;
+
+    drawCanvas.addEventListener('mousedown', (e)=>{
+      if(currentMode!=='draw' || !consentBox.checked || isMuted) return;
+      isDrawing = true;
+      lastPos = getMousePos(e);
+    });
+
+    drawCanvas.addEventListener('mousemove', (e)=>{
+      if(!isDrawing || currentMode!=='draw') return;
+      const pos = getMousePos(e);
+      if(lastPos){
+        drawOnCanvas(lastPos.x, lastPos.y, pos.x, pos.y, currentColor, currentBrushSize);
+        const msg = {type:'draw', x:lastPos.x, y:lastPos.y, x2:pos.x, y2:pos.y, color:currentColor, size:currentBrushSize};
+        broadcast(msg);
+      }
+      lastPos = pos;
+    });
+
+    drawCanvas.addEventListener('mouseup', ()=>{ isDrawing=false; lastPos=null; });
+    drawCanvas.addEventListener('mouseleave', ()=>{ isDrawing=false; lastPos=null; });
+
+    // Touch support
+    drawCanvas.addEventListener('touchstart', (e)=>{
+      if(currentMode!=='draw' || !consentBox.checked || isMuted) return;
+      e.preventDefault();
+      isDrawing = true;
+      lastPos = getTouchPos(e);
+    }, {passive:false});
+
+    drawCanvas.addEventListener('touchmove', (e)=>{
+      if(!isDrawing || currentMode!=='draw') return;
+      e.preventDefault();
+      const pos = getTouchPos(e);
+      if(lastPos && pos){
+        drawOnCanvas(lastPos.x, lastPos.y, pos.x, pos.y, currentColor, currentBrushSize);
+        const msg = {type:'draw', x:lastPos.x, y:lastPos.y, x2:pos.x, y2:pos.y, color:currentColor, size:currentBrushSize};
+        broadcast(msg);
+        lastPos = pos;
+      }
+    }, {passive:false});
+
+    drawCanvas.addEventListener('touchend', ()=>{ isDrawing=false; lastPos=null; });
+
+    // Color picker
+    document.querySelectorAll('.color-btn').forEach(btn=>{
+      btn.addEventListener('click', ()=>{
+        document.querySelectorAll('.color-btn').forEach(b=>b.classList.remove('active'));
+        btn.classList.add('active');
+        currentColor = btn.dataset.color;
+      });
+    });
+
+    brushSize.addEventListener('input', ()=>{
+      currentBrushSize = parseInt(brushSize.value);
+    });
+
+    clearCanvas.addEventListener('click', ()=>{
+      clearCanvasLocal();
+      broadcast({type:'clear-canvas'});
+      log('Canvas cleared.');
+    });
+
+    // Screen sharing
+    const peerConnections = new Map(); // peerId -> RTCPeerConnection for screen sharing
+
+    const startScreenShare = async ()=>{
+      try{
+        screenStream = await navigator.mediaDevices.getDisplayMedia({video: true, audio: true});
+        isSharing = true;
+        shareScreenBtn.textContent = '🛑 Stop Sharing';
+        screenVideo.srcObject = screenStream;
+        screenContainer.style.display = 'block';
+        presenterName.textContent = 'You';
+        
+        broadcast({type:'screen-start', presenter: peer?.id || 'You'});
+        
+        // Create peer connections for each viewer
+        conns.forEach(async (conn, peerId)=>{
+          const pc = new RTCPeerConnection({iceServers: [{urls: 'stun:stun.l.google.com:19302'}]});
+          peerConnections.set(peerId, pc);
+          
+          screenStream.getTracks().forEach(track => pc.addTrack(track, screenStream));
+          
+          pc.onicecandidate = (e)=>{
+            if(e.candidate){
+              conn.send({type:'screen-ice', candidate: e.candidate});
+            }
+          };
+          
+          const offer = await pc.createOffer();
+          await pc.setLocalDescription(offer);
+          conn.send({type:'screen-offer', offer: offer});
+        });
+        
+        screenStream.getTracks()[0].onended = ()=> stopScreenShare();
+        log('Screen sharing started');
+      }catch(e){
+        log(`Screen share error: ${e.message}`);
+      }
+    };
+
+    const stopScreenShare = ()=>{
+      if(screenStream){
+        screenStream.getTracks().forEach(t => t.stop());
+        screenStream = null;
+      }
+      peerConnections.forEach(pc => pc.close());
+      peerConnections.clear();
+      isSharing = false;
+      shareScreenBtn.textContent = '📺 Share Screen';
+      stopScreenDisplay();
+      broadcast({type:'screen-stop', presenter: peer?.id || 'You'});
+      log('Screen sharing stopped');
+    };
+
+    const stopScreenDisplay = ()=>{
+      screenContainer.style.display = 'none';
+      if(screenVideo.srcObject){
+        screenVideo.srcObject.getTracks().forEach(t => t.stop());
+        screenVideo.srcObject = null;
+      }
+      currentPresenter = null;
+    };
+
+    const handleScreenOffer = async (data, fromId)=>{
+      const pc = new RTCPeerConnection({iceServers: [{urls: 'stun:stun.l.google.com:19302'}]});
+      peerConnections.set(fromId, pc);
+      
+      pc.ontrack = (e)=>{
+        screenVideo.srcObject = e.streams[0];
+      };
+      
+      pc.onicecandidate = (e)=>{
+        if(e.candidate){
+          const conn = conns.get(fromId);
+          if(conn?.open) conn.send({type:'screen-ice', candidate: e.candidate});
+        }
+      };
+      
+      await pc.setRemoteDescription(new RTCSessionDescription(data.offer));
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+      
+      const conn = conns.get(fromId);
+      if(conn?.open) conn.send({type:'screen-answer', answer: answer});
+    };
+
+    const handleScreenAnswer = async (data)=>{
+      const pc = peerConnections.get(data.peerId);
+      if(pc){
+        await pc.setRemoteDescription(new RTCSessionDescription(data.answer));
+      }
+    };
+
+    const handleScreenIce = async (data)=>{
+      const pc = Array.from(peerConnections.values())[0];
+      if(pc && data.candidate){
+        await pc.addIceCandidate(new RTCIceCandidate(data.candidate));
+      }
+    };
+
+    shareScreenBtn.addEventListener('click', ()=>{
+      if(isSharing) stopScreenShare();
+      else startScreenShare();
+    });
+
     // Network hint
     window.addEventListener('offline', ()=>log('Browser went offline.'));
     window.addEventListener('online', ()=>log('Browser is online.'));
+    
+    // Initialize to text mode
+    setMode('text');
   })();
   </script>
 </body>
