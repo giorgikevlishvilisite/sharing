@@ -23,7 +23,8 @@
     .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
     input[type="text"], textarea{width:100%;padding:12px 14px;border-radius:12px;border:1px solid rgba(168,85,247,.5);background:rgba(30,8,54,.6);color:var(--text);outline:none;font-family:inherit;transition:all .3s ease}
     input[type="text"]:focus, textarea:focus{border-color:#a855f7;box-shadow:0 0 20px rgba(168,85,247,.4);background:rgba(30,8,54,.8)}
-    textarea{min-height:200px;resize:vertical}
+    textarea{min-height:200px;resize:vertical;font-size:14px;line-height:1.5}
+    textarea.code-mode{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;background:rgba(15,5,30,.9);border-color:#a855f7;tab-size:2;white-space:pre}
     button{appearance:none;border:none;background:linear-gradient(135deg,#7c3aed,#6d28d9);border:1px solid #8b5cf6;color:#f3e8ff;padding:10px 14px;border-radius:12px;cursor:pointer;font-weight:700;transition:all .3s ease;box-shadow:0 4px 15px rgba(124,58,237,.3)}
     button:hover{transform:translateY(-2px);box-shadow:0 6px 20px rgba(124,58,237,.5)}
     button.primary{background:linear-gradient(135deg,#a855f7,#9333ea);border-color:#c084fc;color:#fff;box-shadow:0 4px 20px rgba(168,85,247,.5)}
@@ -43,6 +44,15 @@
     .id{font-variant:tabular-nums;color:#c084fc}
     footer{margin-top:18px;font-size:12px;opacity:.8}
     .copy{font-size:12px;color:#d8b4fe}
+    .output-frame{width:100%;min-height:300px;border:1px solid rgba(168,85,247,.4);border-radius:12px;background:#fff;margin-top:12px}
+    .run-controls{display:flex;gap:8px;margin-top:10px;align-items:center}
+    .user-list{margin-top:12px;max-height:180px;overflow:auto}
+    .user-item{display:flex;align-items:center;justify-content:space-between;padding:8px 10px;margin:4px 0;background:rgba(30,8,54,.4);border:1px solid rgba(168,85,247,.3);border-radius:8px}
+    .user-item .user-id{font-family:ui-monospace,monospace;font-size:12px;color:#c084fc}
+    .user-item .user-controls{display:flex;gap:6px}
+    .user-item button{padding:4px 8px;font-size:11px}
+    .user-item.muted{opacity:.6;border-color:#dc2626}
+    .user-item.muted .user-id{color:#fca5a5}
   </style>
 </head>
 <body>
@@ -61,13 +71,23 @@
 
     <div class="grid">
       <section class="card">
-        <div class="hd"><h2>Shared Text Area</h2><span class="tag">what you type is visible to everyone in the room</span></div>
+        <div class="hd">
+          <h2>Shared Text Area</h2>
+          <span class="tag">what you type is visible to everyone in the room</span>
+          <button id="codeModeBtn" class="ghost" style="margin-left:auto;font-size:13px;padding:6px 12px">📝 Text</button>
+        </div>
         <div class="bd">
           <div class="consent" style="margin-bottom:10px">
             <input type="checkbox" id="consentBox">
             <label for="consentBox">I understand and consent that anything I type below will be shared in real time with everyone connected to this room. Only use this with people who agree.</label>
           </div>
           <textarea id="shared" placeholder="Start typing after you connect & consent…" disabled></textarea>
+          <div class="run-controls" id="runControls" style="display:none">
+            <button id="runBtn" class="primary">▶ Run Code</button>
+            <button id="clearBtn" class="ghost">Clear Output</button>
+            <span class="help">HTML/CSS/JS supported</span>
+          </div>
+          <iframe id="outputFrame" class="output-frame" sandbox="allow-scripts" style="display:none"></iframe>
           <div class="row" style="justify-content:space-between;margin-top:10px">
             <span class="help">Tip: Open this page on your phone and join the same room to see live typing.</span>
             <span class="copy">Characters: <span id="count">0</span></span>
@@ -98,6 +118,11 @@
 
           <h3 style="margin:16px 0 6px 0;font-size:14px;opacity:.9">Event log</h3>
           <div class="log" id="log" aria-live="polite"></div>
+
+          <div id="userListContainer" style="display:none">
+            <h3 style="margin:16px 0 6px 0;font-size:14px;opacity:.9">Connected Users</h3>
+            <div class="user-list" id="userList"></div>
+          </div>
         </div>
       </aside>
     </div>
@@ -125,13 +150,23 @@
     const qrBox = $('#qrcode');
     const userCount = $('#userCount');
     const lockIndicator = $('#lockIndicator');
+    const codeModeBtn = $('#codeModeBtn');
+    const runBtn = $('#runBtn');
+    const clearBtn = $('#clearBtn');
+    const runControls = $('#runControls');
+    const outputFrame = $('#outputFrame');
+    const userListContainer = $('#userListContainer');
+    const userList = $('#userList');
 
     // state
     let peer = null;        // our PeerJS instance
     let isHost = false;     // am I the room host?
     let roomId = null;      // string
     let isLocked = false;   // is room locked?
+    let isCodeMode = false; // code sharing mode
+    let isMuted = false;    // am I muted by host?
     const conns = new Map();// peerId -> DataConnection
+    const userStates = new Map();// peerId -> {muted: bool}
 
     // utils
     const randId = () => Math.random().toString(36).slice(2,8).toUpperCase();
@@ -143,6 +178,26 @@
     const broadcast = (payload)=>{ conns.forEach(c=>{ try{ c.open && c.send(payload);}catch(e){} }); };
     const updateUserCount = ()=>{ const total = conns.size + (peer ? 1 : 0); userCount.textContent = total; };
     const updateLockUI = ()=>{ lockIndicator.style.display = isLocked ? 'inline-flex' : 'none'; $('#lockBtn').textContent = isLocked ? 'Unlock' : 'Lock'; };
+    const updateUserList = ()=>{
+      if(!isHost){ userListContainer.style.display = 'none'; return; }
+      userListContainer.style.display = conns.size > 0 ? 'block' : 'none';
+      userList.innerHTML = '';
+      conns.forEach((conn, peerId)=>{
+        const state = userStates.get(peerId) || {muted: false};
+        const div = document.createElement('div');
+        div.className = 'user-item' + (state.muted ? ' muted' : '');
+        div.innerHTML = `
+          <span class="user-id">${peerId}</span>
+          <div class="user-controls">
+            <button class="ghost mute-btn">${state.muted ? 'Unmute' : 'Mute'}</button>
+            <button class="ghost kick-btn">Kick</button>
+          </div>
+        `;
+        div.querySelector('.mute-btn').addEventListener('click', ()=>toggleMute(peerId));
+        div.querySelector('.kick-btn').addEventListener('click', ()=>kickUser(peerId));
+        userList.appendChild(div);
+      });
+    };
 
     // sound notifications
     const playSound = (freq, duration = 200) => {
@@ -163,8 +218,32 @@
     const soundJoin = () => { playSound(800, 150); setTimeout(() => playSound(1000, 150), 100); };
     const soundLeave = () => { playSound(600, 150); setTimeout(() => playSound(400, 150), 100); };
 
+    // Host controls
+    const toggleMute = (peerId)=>{
+      if(!isHost) return;
+      const state = userStates.get(peerId) || {muted: false};
+      state.muted = !state.muted;
+      userStates.set(peerId, state);
+      const conn = conns.get(peerId);
+      if(conn?.open){ try{ conn.send({type:'mute', muted: state.muted}); }catch(e){} }
+      log(`User ${peerId} ${state.muted ? 'muted' : 'unmuted'}`);
+      updateUserList();
+    };
+
+    const kickUser = (peerId)=>{
+      if(!isHost) return;
+      const conn = conns.get(peerId);
+      if(conn?.open){ try{ conn.send({type:'kick'}); conn.close(); }catch(e){} }
+      conns.delete(peerId);
+      userStates.delete(peerId);
+      log(`User ${peerId} kicked`);
+      updateUserCount();
+      updateUserList();
+      soundLeave();
+    };
+
     // consent gating
-    const setTypingEnabled = ()=>{ ta.disabled = !consentBox.checked || conns.size===0 && !isHost; };
+    const setTypingEnabled = ()=>{ ta.disabled = !consentBox.checked || isMuted || conns.size===0 && !isHost; };
     consentBox.addEventListener('change', setTypingEnabled);
 
     // character counter
@@ -190,7 +269,11 @@
     // host receive + relay; client receive
     const handleMessage = (data, fromId)=>{
       if(data?.type==='text'){
-        if(fromId && isHost){ // relay to everyone except sender
+        // Host: check if sender is muted
+        if(fromId && isHost){
+          const senderState = userStates.get(fromId);
+          if(senderState?.muted){ return; } // ignore muted users
+          // relay to everyone except sender
           conns.forEach((c,id)=>{ if(id!==fromId && c.open){ try{ c.send(data);}catch(e){} } });
         }
         // update local textarea without triggering resend loop
@@ -203,6 +286,13 @@
         isLocked = data.locked;
         updateLockUI();
         log(isLocked ? 'Room locked by host' : 'Room unlocked by host');
+      } else if(data?.type==='mute'){
+        isMuted = data.muted;
+        setTypingEnabled();
+        log(isMuted ? 'You have been muted by the host' : 'You have been unmuted by the host');
+      } else if(data?.type==='kick'){
+        log('You have been kicked by the host');
+        setTimeout(()=>$('#leaveBtn').click(), 500);
       }
     };
 
@@ -226,8 +316,10 @@
           return;
         }
         conns.set(conn.peer, conn);
+        userStates.set(conn.peer, {muted: false});
         log(`Guest connected: <b>${conn.peer}</b>`);
         updateUserCount();
+        updateUserList();
         soundJoin();
         // send current state immediately
         conn.on('open', ()=>{ 
@@ -236,7 +328,7 @@
           setTypingEnabled(); 
         });
         conn.on('data', (d)=> handleMessage(d, conn.peer));
-        conn.on('close', ()=>{ conns.delete(conn.peer); log(`Guest left: <b>${conn.peer}</b>`); setTypingEnabled(); updateUserCount(); soundLeave(); });
+        conn.on('close', ()=>{ conns.delete(conn.peer); userStates.delete(conn.peer); log(`Guest left: <b>${conn.peer}</b>`); setTypingEnabled(); updateUserCount(); updateUserList(); soundLeave(); });
         conn.on('error', (e)=> log(`Conn error: ${e.message}`));
       });
       peer.on('disconnected', ()=>{ setOnline(false); });
@@ -263,12 +355,22 @@
       peer.on('error', (e)=>{ log(`Peer error: ${e.type||'error'} — ${e.message}`); });
     });
 
+    // Lock/Unlock button (host only)
+    $('#lockBtn').addEventListener('click', ()=>{
+      if(!isHost) return;
+      isLocked = !isLocked;
+      updateLockUI();
+      broadcast({type:'lock', locked: isLocked});
+      log(isLocked ? 'Room locked.' : 'Room unlocked.');
+    });
+
     // Leave/cleanup
     $('#leaveBtn').addEventListener('click', ()=>{
       conns.forEach(c=>{ try{ c.close(); }catch(e){} });
       conns.clear();
+      userStates.clear();
       if(peer){ try{ peer.destroy(); }catch(e){} }
-      peer = null; isHost = false; setOnline(false); $('#leaveBtn').disabled=true; log('Left room.'); setTypingEnabled(); updateUserCount();
+      peer = null; isHost = false; isMuted = false; setOnline(false); $('#leaveBtn').disabled=true; $('#lockBtn').disabled=true; log('Left room.'); setTypingEnabled(); updateUserCount(); updateUserList();
     });
 
     // Copy link button
@@ -284,6 +386,38 @@
     // Pre-fill from hash if present
     const hash = (location.hash||'').slice(1);
     if(hash){ roomInput.value = decodeURIComponent(hash.toUpperCase()); updateQR(roomInput.value); }
+
+    // Code mode toggle
+    codeModeBtn.addEventListener('click', ()=>{
+      isCodeMode = !isCodeMode;
+      ta.classList.toggle('code-mode', isCodeMode);
+      codeModeBtn.textContent = isCodeMode ? '💻 Code' : '📝 Text';
+      ta.placeholder = isCodeMode ? 'Share code here…' : 'Start typing after you connect & consent…';
+      runControls.style.display = isCodeMode ? 'flex' : 'none';
+      if(!isCodeMode) outputFrame.style.display = 'none';
+      log(isCodeMode ? 'Switched to code mode.' : 'Switched to text mode.');
+    });
+
+    // Run code
+    runBtn.addEventListener('click', ()=>{
+      const code = ta.value;
+      outputFrame.style.display = 'block';
+      const doc = outputFrame.contentDocument || outputFrame.contentWindow.document;
+      doc.open();
+      doc.write(code);
+      doc.close();
+      log('Code executed.');
+    });
+
+    // Clear output
+    clearBtn.addEventListener('click', ()=>{
+      outputFrame.style.display = 'none';
+      const doc = outputFrame.contentDocument || outputFrame.contentWindow.document;
+      doc.open();
+      doc.write('');
+      doc.close();
+      log('Output cleared.');
+    });
 
     // Network hint
     window.addEventListener('offline', ()=>log('Browser went offline.'));
